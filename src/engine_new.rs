@@ -7,7 +7,9 @@ use std::fmt::Display;
 pub enum Op<T> {
     Input,
     Add,
+    Sub,
     Mul,
+    Div,
     Relu,
     Tanh,
     Pow(T),
@@ -22,7 +24,7 @@ pub struct Node<T: Float + Copy> {
     pub parents: Vec<usize>,
 }
 
-/// A GraphArena holds all nodes and topological order.
+/// Low-level arena holding nodes and topological order.
 #[derive(Debug)]
 pub struct GraphArena<T: Float + Copy> {
     pub nodes: Vec<Node<T>>,
@@ -51,7 +53,7 @@ impl<T: Float + Copy> GraphArena<T> {
         idx
     }
 
-    /// Add two nodes: c = a + b
+    /// Create a node representing addition: c = a + b.
     pub fn add(&mut self, a: usize, b: usize) -> usize {
         let data = self.nodes[a].data + self.nodes[b].data;
         let idx = self.nodes.len();
@@ -65,7 +67,21 @@ impl<T: Float + Copy> GraphArena<T> {
         idx
     }
 
-    /// Multiply two nodes: c = a * b
+    /// Create a node representing subtraction: c = a - b.
+    pub fn sub(&mut self, a: usize, b: usize) -> usize {
+        let data = self.nodes[a].data - self.nodes[b].data;
+        let idx = self.nodes.len();
+        self.nodes.push(Node {
+            data,
+            grad: T::zero(),
+            op: Op::Sub,
+            parents: vec![a, b],
+        });
+        self.topo.push(idx);
+        idx
+    }
+
+    /// Create a node representing multiplication: c = a * b.
     pub fn mul(&mut self, a: usize, b: usize) -> usize {
         let data = self.nodes[a].data * self.nodes[b].data;
         let idx = self.nodes.len();
@@ -79,7 +95,21 @@ impl<T: Float + Copy> GraphArena<T> {
         idx
     }
 
-    /// ReLU activation: c = max(0, a)
+    /// Create a node representing division: c = a / b.
+    pub fn div(&mut self, a: usize, b: usize) -> usize {
+        let data = self.nodes[a].data / self.nodes[b].data;
+        let idx = self.nodes.len();
+        self.nodes.push(Node {
+            data,
+            grad: T::zero(),
+            op: Op::Div,
+            parents: vec![a, b],
+        });
+        self.topo.push(idx);
+        idx
+    }
+
+    /// ReLU activation: c = max(0, a).
     pub fn relu(&mut self, a: usize) -> usize {
         let x = self.nodes[a].data;
         let data = if x > T::zero() { x } else { T::zero() };
@@ -94,7 +124,7 @@ impl<T: Float + Copy> GraphArena<T> {
         idx
     }
 
-    /// Tanh activation: c = tanh(a)
+    /// Tanh activation: c = tanh(a).
     pub fn tanh(&mut self, a: usize) -> usize {
         let x = self.nodes[a].data;
         let data = x.tanh();
@@ -109,7 +139,7 @@ impl<T: Float + Copy> GraphArena<T> {
         idx
     }
 
-    /// Power: c = a.powf(exponent)
+    /// Power: c = a.powf(exponent).
     pub fn powf(&mut self, a: usize, exponent: T) -> usize {
         let data = self.nodes[a].data.powf(exponent);
         let idx = self.nodes.len();
@@ -123,51 +153,65 @@ impl<T: Float + Copy> GraphArena<T> {
         idx
     }
 
-    /// Perform backward pass from loss index.
+    /// Perform backward pass from loss index to compute gradients.
     pub fn backward(&mut self, loss_idx: usize) {
-        // zero all gradients
+        // Reset grads
         for node in &mut self.nodes {
             node.grad = T::zero();
         }
-        // seed gradient at loss
+        // Seed gradient at loss
         self.nodes[loss_idx].grad = T::one();
 
-        // traverse in reverse topological order
+        // Traverse in reverse topological order
         for &idx in self.topo.iter().rev() {
             let grad = self.nodes[idx].grad;
+            let parents = &self.nodes[idx].parents;
             match self.nodes[idx].op {
                 Op::Add => {
-                    let [a, b] = <[usize; 2]>::try_from(self.nodes[idx].parents.clone()).unwrap();
+                    let [a, b] = <[usize; 2]>::try_from(parents.clone()).unwrap();
                     self.nodes[a].grad = self.nodes[a].grad + grad;
                     self.nodes[b].grad = self.nodes[b].grad + grad;
                 }
+                Op::Sub => {
+                    let [a, b] = <[usize; 2]>::try_from(parents.clone()).unwrap();
+                    self.nodes[a].grad = self.nodes[a].grad + grad;
+                    self.nodes[b].grad = self.nodes[b].grad - grad;
+                }
                 Op::Mul => {
-                    let [a, b] = <[usize; 2]>::try_from(self.nodes[idx].parents.clone()).unwrap();
+                    let [a, b] = <[usize; 2]>::try_from(parents.clone()).unwrap();
                     let da = self.nodes[b].data * grad;
                     let db = self.nodes[a].data * grad;
                     self.nodes[a].grad = self.nodes[a].grad + da;
                     self.nodes[b].grad = self.nodes[b].grad + db;
                 }
+                Op::Div => {
+                    let [a, b] = <[usize; 2]>::try_from(parents.clone()).unwrap();
+                    let da = grad / self.nodes[b].data;
+                    let db =
+                        -(self.nodes[a].data * grad) / (self.nodes[b].data * self.nodes[b].data);
+                    self.nodes[a].grad = self.nodes[a].grad + da;
+                    self.nodes[b].grad = self.nodes[b].grad + db;
+                }
                 Op::Relu => {
-                    let a = self.nodes[idx].parents[0];
-                    let derivative = if self.nodes[a].data > T::zero() {
+                    let a = parents[0];
+                    let d = if self.nodes[a].data > T::zero() {
                         T::one()
                     } else {
                         T::zero()
                     };
-                    self.nodes[a].grad = self.nodes[a].grad + derivative * grad;
+                    self.nodes[a].grad = self.nodes[a].grad + d * grad;
                 }
                 Op::Tanh => {
-                    let a = self.nodes[idx].parents[0];
+                    let a = parents[0];
                     let y = self.nodes[idx].data;
-                    let derivative = T::one() - y * y;
-                    self.nodes[a].grad = self.nodes[a].grad + derivative * grad;
+                    let d = T::one() - y * y;
+                    self.nodes[a].grad = self.nodes[a].grad + d * grad;
                 }
                 Op::Pow(exp) => {
-                    let a = self.nodes[idx].parents[0];
+                    let a = parents[0];
                     let x = self.nodes[a].data;
-                    let derivative = exp * x.powf(exp - T::one());
-                    self.nodes[a].grad = self.nodes[a].grad + derivative * grad;
+                    let d = exp * x.powf(exp - T::one());
+                    self.nodes[a].grad = self.nodes[a].grad + d * grad;
                 }
                 Op::Input => {}
             }
@@ -176,7 +220,7 @@ impl<T: Float + Copy> GraphArena<T> {
 }
 
 impl<T: Float + Copy + Display> GraphArena<T> {
-    /// Pretty-print the computation graph (data & grad) from a given root index.
+    /// Pretty-print the graph data and gradients from a given root index.
     pub fn print_graph(&self, root: usize) {
         let mut visited = HashSet::new();
         self.print_node(root, &[], &mut visited);
@@ -187,7 +231,7 @@ impl<T: Float + Copy + Display> GraphArena<T> {
             return;
         }
 
-        // draw prefixes
+        // Prefix lines
         for &is_last in ancestors_last {
             print!("{}", if is_last { "    " } else { "|   " });
         }
@@ -196,19 +240,24 @@ impl<T: Float + Copy + Display> GraphArena<T> {
             print!("{}", if last { "|__ " } else { "|-- " });
         }
 
-        // node label with data and grad
+        // Node details
         let node = &self.nodes[idx];
-        let op_str = match &node.op {
+        let op_str = match node.op {
             Op::Add => "+",
+            Op::Sub => "-",
             Op::Mul => "*",
+            Op::Div => "/",
             Op::Relu => "relu",
             Op::Tanh => "tanh",
             Op::Pow(_) => "pow",
             Op::Input => "input",
         };
-        println!("{}: {} ({}) [grad={}]", idx, node.data, op_str, node.grad);
+        println!(
+            "{}: {:.4} ({}) [grad={:.4}]",
+            idx, node.data, op_str, node.grad
+        );
 
-        // recurse into parents
+        // Recurse into parents
         let parents = &node.parents;
         let n = parents.len();
         for (i, &p) in parents.iter().enumerate() {
