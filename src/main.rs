@@ -1,16 +1,14 @@
 use rusty_micrograd::GraphArena;
+use rusty_micrograd::mlp::{Layer, MLP, Neuron};
 
 fn main() {
-    let mut g = GraphArena::<f32>::new();
-    let x = g.input(2.0);
-    // let y = g.input(3.0);
-    let z = g.mul(x, x);
-    let w = g.add(z, x);
-    // g.print_graph(w);
-    g.backward(w);
-    g.print_graph(w);
-    // println!(
-    //     "w data={}, x grad={}, y grad={}",
-    //     g.nodes[w].data, g.nodes[x].grad, g.nodes[y].grad
-    // );
+    let mut arena = GraphArena::<f32>::new();
+    let x_ids = vec![arena.input(0.5_f32), arena.input(-1.2_f32)];
+    let neuron = Neuron::new(vec![0.8_f32, -0.4_f32], 0.1_f32, GraphArena::tanh);
+
+    let layer = Layer::new(vec![neuron]);
+    let mut mlp = MLP::new(vec![layer]);
+    let out_ids = mlp.forward(&mut arena, &x_ids);
+    arena.backward(out_ids[0]);
+    arena.print_graph(out_ids[0]);
 }
