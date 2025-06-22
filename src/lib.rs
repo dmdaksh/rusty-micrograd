@@ -1,8 +1,8 @@
 pub mod engine;
 pub use engine::Value;
 
-pub mod graph_arena;
-pub use graph_arena::GraphArena;
+pub mod arena;
+pub use arena::GraphArena;
 
 #[cfg(test)]
 pub mod tests;
