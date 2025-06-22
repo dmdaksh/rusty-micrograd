@@ -11,7 +11,7 @@ use std::{
 struct Inner<T: Float + Copy> {
     data: T,
     grad: T,
-    oper: char,
+    op: &'static str,
     label: String,
     prev: Vec<Weak<RefCell<Inner<T>>>>,
 }
@@ -30,19 +30,19 @@ where
             inner: Rc::new(RefCell::new(Inner {
                 data,
                 grad: T::zero(),
-                oper: '\0',
+                op: "",
                 label: String::new(),
                 prev: Vec::new(),
             })),
         }
     }
 
-    pub fn new_with_oper(data: T, oper: char) -> Self {
+    pub fn new_with_op(data: T, op: &'static str) -> Self {
         Value {
             inner: Rc::new(RefCell::new(Inner {
                 data,
                 grad: T::zero(),
-                oper,
+                op,
                 label: String::new(),
                 prev: Vec::new(),
             })),
@@ -65,7 +65,32 @@ where
         self.inner.borrow_mut().label = label.into();
     }
 
-    pub fn add_prev(&self, child: &Value<T>) {
+    pub fn zero_grad(&mut self) {
+        self.inner.borrow_mut().grad = T::zero();
+    }
+
+    pub fn tanh(&self) -> Self {
+        let data = self.get().tanh();
+        let result = Value::new_with_op(data, "tanh");
+        result.add_prev(self);
+        result
+    }
+
+    pub fn relu(&self) -> Self {
+        let data = self.get().max(T::zero());
+        let result = Value::new_with_op(data, "relu");
+        result.add_prev(self);
+        result
+    }
+
+    pub fn pow(&self, exponent: T) -> Self {
+        let data = self.get().powf(exponent);
+        let result = Value::new_with_op(data, "pow");
+        result.add_prev(self);
+        result
+    }
+
+    fn add_prev(&self, child: &Value<T>) {
         let weak_child = Rc::downgrade(&child.inner);
         self.inner.borrow_mut().prev.push(weak_child);
     }
@@ -86,7 +111,7 @@ where
             .map(|rc| rc.borrow().data.to_string())
             .collect();
 
-        if self.inner.borrow().oper == '\0' {
+        if self.inner.borrow().op == "" {
             write!(
                 f,
                 "Value(data: {}) [prev: {}]",
@@ -100,9 +125,9 @@ where
         } else {
             write!(
                 f,
-                "Value(data: {}, oper: '{}') [prev: {}]",
+                "Value(data: {}, op: '{}') [prev: {}]",
                 self.inner.borrow().data,
-                self.inner.borrow().oper,
+                self.inner.borrow().op,
                 if prev_data.is_empty() {
                     "none".to_string()
                 } else {
@@ -132,7 +157,7 @@ where
 
     fn add(self, other: &'b Value<T>) -> Value<T> {
         let new_data = self.get() + other.get();
-        let result = Value::new_with_oper(new_data, '+');
+        let result = Value::new_with_op(new_data, "+");
         result.add_prev(self);
         result.add_prev(other);
         result
@@ -158,7 +183,7 @@ where
 
     fn mul(self, other: &'b Value<T>) -> Value<T> {
         let new_data = self.get() * other.get();
-        let result = Value::new_with_oper(new_data, '*');
+        let result = Value::new_with_op(new_data, "*");
         result.add_prev(self);
         result.add_prev(other);
         result
@@ -179,9 +204,7 @@ where
     T: Float + Copy + AddAssign,
 {
     fn add_assign(&mut self, other: &'a Value<T>) {
-        let new_data = self.get() + other.get();
-        self.set_data(new_data);
-        self.add_prev(other);
+        self.set_data(self.get() + other.get());
     }
 }
 
@@ -199,9 +222,7 @@ where
     T: Float + Copy + MulAssign,
 {
     fn mul_assign(&mut self, other: &'a Value<T>) {
-        let new_data = self.get() * other.get();
-        self.set_data(new_data);
-        self.add_prev(other);
+        self.set_data(self.get() * other.get());
     }
 }
 
@@ -236,13 +257,13 @@ where
         // decide what to show
         let inner = self.inner.borrow();
         let line = if !inner.label.is_empty() {
-            if inner.oper == '\0' {
+            if inner.op == "" {
                 format!("{}: {}", inner.label, inner.data)
             } else {
-                format!("{}: {} ({})", inner.label, inner.data, inner.oper)
+                format!("{}: {} ({})", inner.label, inner.data, inner.op)
             }
-        } else if inner.oper != '\0' {
-            format!("{} ({})", inner.data, inner.oper)
+        } else if inner.op != "" {
+            format!("{} ({})", inner.data, inner.op)
         } else {
             inner.data.to_string()
         };
